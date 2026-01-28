@@ -6,11 +6,11 @@ import 'leaflet-routing-machine';
 const map = ref(null);
 const routingControl = ref(null);
 
-// Ponto Inicial (Marco Zero)
+
 const pontoInicial = [-8.0631, -34.8711];
 
 onMounted(() => {
-  // 1. Inicia o Mapa
+
   map.value = L.map('mapContainer', { zoomControl: false }).setView(pontoInicial, 14);
 
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
