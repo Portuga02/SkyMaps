@@ -17,24 +17,23 @@ onMounted(() => {
     attribution: '© OpenStreetMap'
   }).addTo(map.value);
 
-  // 2. Cria o Controlador de Rotas (VAZIO POR ENQUANTO)
-  // Deixamos ele pronto, mas escondido, esperando ordens.
+ 
   routingControl.value = L.Routing.control({
     waypoints: [
-      L.latLng(pontoInicial), // Começa aqui
-      // Sem destino ainda
+      L.latLng(pontoInicial), 
+     
     ],
-    routeWhileDragging: false, // Desliguei para economizar requisições e evitar travar
+    routeWhileDragging: false, 
     language: 'en',
     show: true, 
     lineOptions: {
       styles: [{ color: '#3b82f6', opacity: 0.8, weight: 6 }]
     },
-    // Tratamento de Erro (Para não quebrar se clicar na água)
-    createMarker: function() { return null; } // Remove os marcadores extras feios padrão
+   
+    createMarker: function() { return null; } 
   }).addTo(map.value);
 
-  // 3. Adiciona o Carrinho no Início
+ 
   const carroIcon = L.icon({
     iconUrl: 'https://cdn-icons-png.flaticon.com/512/3202/3202926.png',
     iconSize: [40, 40],
@@ -42,12 +41,9 @@ onMounted(() => {
   });
   L.marker(pontoInicial, { icon: carroIcon }).addTo(map.value).bindPopup("Estou aqui!");
 
-  // 4. Evento de Clique Inteligente
   map.value.on('click', function(e) {
     const destino = e.latlng;
-    
-    // Em vez de destruir tudo, só atualizamos os pontos!
-    // Isso evita o erro "TypeError: null"
+
     routingControl.value.setWaypoints([
       L.latLng(pontoInicial),
       destino
