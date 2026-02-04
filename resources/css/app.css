@@ -4,7 +4,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Reset para garantir tela cheia sem barras brancas */
+
 body, html {
     margin: 0;
     padding: 0;
