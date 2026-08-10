@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue';
+import { onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import L from 'leaflet';
 import 'leaflet-routing-machine';
 
@@ -7,8 +7,22 @@ const map = ref(null);
 const routingControl = ref(null);
 const routeInfo = ref(null);
 const gpsReady = ref(false);
+const gpsErro = ref(false);
 
-const pontoInicial = [-8.0631, -34.8711];
+// Recife é usado como fallback caso o navegador negue ou não tenha GPS
+const pontoFallback = [-8.0631, -34.8711];
+
+// posicaoAtual não precisa ser reativo: só é lido dentro de handlers/closures
+let posicaoAtual = [...pontoFallback];
+let marcadorCarro = null;
+let watchId = null;
+let ultimaPosicaoRoteada = null;
+
+const buscaTexto = ref('');
+const resultadosBusca = ref([]);
+const buscando = ref(false);
+const buscaTentada = ref(false);
+let debounceTimer = null;
 
 function formatDistancia(metros) {
   const km = metros / 1000;
@@ -30,23 +44,139 @@ function formatChegada(segundos) {
 
 function limparRota() {
   routeInfo.value = null;
-  routingControl.value.setWaypoints([L.latLng(pontoInicial)]);
+  ultimaPosicaoRoteada = null;
+  routingControl.value.setWaypoints([L.latLng(posicaoAtual)]);
+}
+
+function iniciarGPS() {
+  if (!navigator.geolocation) {
+    gpsErro.value = true;
+    return;
+  }
+
+  watchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      posicaoAtual = [pos.coords.latitude, pos.coords.longitude];
+      gpsReady.value = true;
+      gpsErro.value = false;
+
+      if (marcadorCarro) {
+        marcadorCarro.setLatLng(posicaoAtual);
+      }
+
+      if (!ultimaPosicaoRoteada) {
+        // Primeira localização recebida: centraliza o mapa e move a origem da rota
+        map.value.setView(posicaoAtual, 15);
+        routingControl.value.setWaypoints([L.latLng(posicaoAtual)]);
+        ultimaPosicaoRoteada = L.latLng(posicaoAtual);
+      } else if (routeInfo.value) {
+        // Já existe uma rota ativa: só recalcula se o carro andou o suficiente
+        // (evita bater no limite de requisições do servidor de rotas a cada segundo)
+        const distanciaMovida = L.latLng(posicaoAtual).distanceTo(ultimaPosicaoRoteada);
+        if (distanciaMovida > 40) {
+          const waypoints = routingControl.value.getWaypoints();
+          const destino = waypoints[waypoints.length - 1];
+          if (destino && destino.latLng) {
+            routingControl.value.setWaypoints([L.latLng(posicaoAtual), destino.latLng]);
+            ultimaPosicaoRoteada = L.latLng(posicaoAtual);
+          }
+        }
+      }
+    },
+    () => {
+      gpsErro.value = true;
+      gpsReady.value = false;
+    },
+    { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
+  );
+}
+
+async function buscarEndereco(texto) {
+  if (texto.trim().length < 3) {
+    resultadosBusca.value = [];
+    buscaTentada.value = false;
+    return;
+  }
+  buscando.value = true;
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=json&limit=5&addressdetails=0&q=${encodeURIComponent(texto)}`;
+    const resp = await fetch(url);
+    resultadosBusca.value = await resp.json();
+  } catch (e) {
+    resultadosBusca.value = [];
+  } finally {
+    buscando.value = false;
+    buscaTentada.value = true;
+  }
+}
+
+watch(buscaTexto, (novoTexto) => {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => buscarEndereco(novoTexto), 500);
+});
+
+function escolherResultado(resultado) {
+  const destino = L.latLng(parseFloat(resultado.lat), parseFloat(resultado.lon));
+  routingControl.value.setWaypoints([L.latLng(posicaoAtual), destino]);
+  ultimaPosicaoRoteada = L.latLng(posicaoAtual);
+  resultadosBusca.value = [];
+  buscaTentada.value = false;
+  buscaTexto.value = resultado.display_name.split(',').slice(0, 2).join(',');
+}
+
+function limparBusca() {
+  buscaTexto.value = '';
+  resultadosBusca.value = [];
+  buscaTentada.value = false;
+}
+
+function criarPinDestino() {
+  return L.divIcon({
+    className: 'skymaps-marker-wrapper',
+    iconSize: [30, 40],
+    iconAnchor: [15, 40],
+    popupAnchor: [0, -36],
+    html: `
+      <svg width="30" height="40" viewBox="0 0 30 40" xmlns="http://www.w3.org/2000/svg"
+        style="filter: drop-shadow(0 4px 8px rgba(255,79,163,0.55));">
+        <path d="M15 0C6.7 0 0 6.7 0 15c0 11 15 25 15 25s15-14 15-25C30 6.7 23.3 0 15 0z"
+          fill="url(#skymapsPinGrad)" stroke="rgba(255,255,255,0.85)" stroke-width="1.5" />
+        <circle cx="15" cy="15" r="5.5" fill="#0a0e1f" />
+        <defs>
+          <linearGradient id="skymapsPinGrad" x1="0" y1="0" x2="30" y2="40" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#ff4fa3" />
+            <stop offset="1" stop-color="#7c4dff" />
+          </linearGradient>
+        </defs>
+      </svg>
+    `
+  });
 }
 
 onMounted(() => {
-  map.value = L.map('mapContainer', { zoomControl: false }).setView(pontoInicial, 14);
+  map.value = L.map('mapContainer', { zoomControl: false }).setView(pontoFallback, 14);
 
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution: '© OpenStreetMap © CARTO',
-    subdomains: 'abcd',
-    maxZoom: 20
+  const tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors',
+    subdomains: 'abc',
+    maxZoom: 19
   }).addTo(map.value);
 
+  // Aviso único no console se os tiles não carregarem (rede bloqueada, etc.)
+  let avisoTileMostrado = false;
+  tileLayer.on('tileerror', () => {
+    if (!avisoTileMostrado) {
+      avisoTileMostrado = true;
+      console.warn('SkyMaps: falha ao carregar os tiles do mapa (verifique a conexão).');
+    }
+  });
+
   routingControl.value = L.Routing.control({
-    waypoints: [L.latLng(pontoInicial)],
+    waypoints: [L.latLng(pontoFallback)],
     routeWhileDragging: false,
     language: 'en',
     show: true,
+    showAlternatives: true,
     lineOptions: {
       styles: [
         { color: '#3b6bff', opacity: 0.25, weight: 14 },
@@ -54,7 +184,17 @@ onMounted(() => {
         { color: '#7c8cff', opacity: 1, weight: 4, className: 'skymaps-route-anim' }
       ]
     },
-    createMarker: function () { return null; }
+    altLineOptions: {
+      styles: [
+        { color: '#05070f', opacity: 0.7, weight: 7 },
+        { color: '#4b5480', opacity: 0.85, weight: 4 }
+      ]
+    },
+    createMarker: function (i, waypoint) {
+      // origem (i === 0) já tem o marcador do carro, não precisa de pino
+      if (i === 0) return null;
+      return L.marker(waypoint.latLng, { icon: criarPinDestino() }).bindPopup('Destino');
+    }
   }).addTo(map.value);
 
   routingControl.value.on('routesfound', (e) => {
@@ -77,46 +217,91 @@ onMounted(() => {
       </div>
     `
   });
-  L.marker(pontoInicial, { icon: carroIcon }).addTo(map.value).bindPopup('Estou aqui!');
-
-  setTimeout(() => { gpsReady.value = true; }, 600);
+  marcadorCarro = L.marker(pontoFallback, { icon: carroIcon }).addTo(map.value).bindPopup('Estou aqui!');
 
   map.value.on('click', function (e) {
     const destino = e.latlng;
-    routingControl.value.setWaypoints([L.latLng(pontoInicial), destino]);
+    routingControl.value.setWaypoints([L.latLng(posicaoAtual), destino]);
+    ultimaPosicaoRoteada = L.latLng(posicaoAtual);
+    resultadosBusca.value = [];
   });
+
+  iniciarGPS();
+});
+
+onBeforeUnmount(() => {
+  if (watchId !== null && navigator.geolocation) {
+    navigator.geolocation.clearWatch(watchId);
+  }
+  clearTimeout(debounceTimer);
 });
 </script>
 
 <template>
   <div id="mapContainer" class="w-screen h-screen z-0"></div>
 
-  <!-- Barra superior estilo Waze -->
-  <div
-    class="fixed top-4 left-4 right-4 z-[1000] flex items-center justify-between gap-3 rounded-2xl border p-3.5 px-4 shadow-2xl backdrop-blur-xl"
-    style="background: rgba(19,26,51,0.82); border-color: #232c4d;">
-    <div class="flex items-center gap-3">
-      <div class="flex h-10 w-10 items-center justify-center rounded-xl text-lg"
-        style="background: linear-gradient(135deg,#3b6bff,#ff4fa3);">
-        🛰️
+  <div class="fixed top-4 left-4 right-4 z-[1000] flex flex-col gap-3">
+    <!-- Barra superior estilo Waze -->
+    <div
+      class="flex items-center justify-between gap-3 rounded-2xl border p-3.5 px-4 shadow-2xl backdrop-blur-xl"
+      style="background: rgba(19,26,51,0.82); border-color: #232c4d;">
+      <div class="flex items-center gap-3">
+        <div class="flex h-10 w-10 items-center justify-center rounded-xl text-lg"
+          style="background: linear-gradient(135deg,#3b6bff,#ff4fa3);">
+          🛰️
+        </div>
+        <div>
+          <h1 class="font-display text-lg font-extrabold leading-none tracking-tight" style="color:#f3f5ff;">
+            SKY<span style="color:#7c8cff;">MAPS</span>
+          </h1>
+          <p class="mt-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider" style="color:#8891b8;">
+            <span class="relative flex h-2 w-2">
+              <span v-if="gpsReady" class="skymaps-pulse-dot absolute inline-flex h-full w-full rounded-full" style="background:#3b6bff;"></span>
+              <span class="relative inline-flex h-2 w-2 rounded-full" :style="{ background: gpsErro ? '#ff4fa3' : (gpsReady ? '#3b6bff' : '#8891b8') }"></span>
+            </span>
+            {{ gpsErro ? 'Sem sinal — usando Recife' : (gpsReady ? 'GPS conectado' : 'Buscando sinal…') }}
+          </p>
+        </div>
       </div>
-      <div>
-        <h1 class="font-display text-lg font-extrabold leading-none tracking-tight" style="color:#f3f5ff;">
-          SKY<span style="color:#7c8cff;">MAPS</span>
-        </h1>
-        <p class="mt-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider" style="color:#8891b8;">
-          <span class="relative flex h-2 w-2">
-            <span v-if="gpsReady" class="skymaps-pulse-dot absolute inline-flex h-full w-full rounded-full" style="background:#3b6bff;"></span>
-            <span class="relative inline-flex h-2 w-2 rounded-full" :style="{ background: gpsReady ? '#3b6bff' : '#8891b8' }"></span>
-          </span>
-          {{ gpsReady ? 'GPS conectado' : 'Buscando sinal…' }}
-        </p>
+      <span class="rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide"
+        style="background: rgba(255,79,163,0.16); color:#ff4fa3;">
+        Beta
+      </span>
+    </div>
+
+    <!-- Busca de endereço -->
+    <div class="relative">
+      <div class="flex items-center gap-2 rounded-2xl border px-4 py-3 shadow-xl backdrop-blur-xl"
+        style="background: rgba(19,26,51,0.85); border-color:#232c4d;">
+        <span style="color:#8891b8;">🔍</span>
+        <input
+          v-model="buscaTexto"
+          type="text"
+          placeholder="Para onde vamos?"
+          class="flex-1 bg-transparent text-sm font-medium outline-none"
+          style="color:#f3f5ff;"
+        />
+        <button v-if="buscaTexto" @click="limparBusca" class="text-sm" style="color:#8891b8;">✕</button>
+      </div>
+
+      <div v-if="buscando || resultadosBusca.length || (buscaTentada && buscaTexto.length >= 3)"
+        class="absolute left-0 right-0 mt-2 max-h-72 overflow-y-auto rounded-2xl border shadow-2xl backdrop-blur-xl"
+        style="background: rgba(19,26,51,0.95); border-color:#232c4d;">
+        <div v-if="buscando" class="p-4 text-center text-xs font-semibold" style="color:#8891b8;">Buscando…</div>
+        <div v-else-if="resultadosBusca.length === 0" class="p-4 text-center text-xs font-semibold" style="color:#8891b8;">
+          Nenhum endereço encontrado
+        </div>
+        <button
+          v-for="(resultado, i) in resultadosBusca"
+          :key="i"
+          @click="escolherResultado(resultado)"
+          class="flex w-full items-start gap-2 border-b px-4 py-3 text-left text-xs transition hover:bg-white/5"
+          style="border-color:#232c4d; color:#d9daea;">
+          <span style="color:#7c8cff;">📍</span>
+          <span>{{ resultado.display_name }}</span>
+        </button>
       </div>
     </div>
-    <span class="rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide"
-      style="background: rgba(255,79,163,0.16); color:#ff4fa3;">
-      Beta
-    </span>
   </div>
 
   <!-- Botões flutuantes -->
@@ -127,7 +312,7 @@ onMounted(() => {
     <button @click="map.zoomOut()"
       class="flex h-11 w-11 items-center justify-center rounded-full border text-lg font-bold shadow-xl backdrop-blur-xl transition hover:scale-105 active:scale-95"
       style="background: rgba(19,26,51,0.9); border-color:#232c4d; color:#f3f5ff;">−</button>
-    <button @click="map.setView(pontoInicial, 15, { animate: true })"
+    <button @click="map.setView(posicaoAtual, 15, { animate: true })"
       class="flex h-11 w-11 items-center justify-center rounded-full border text-lg shadow-xl backdrop-blur-xl transition hover:scale-105 active:scale-95"
       style="background: linear-gradient(135deg,#3b6bff,#7c8cff); border-color:#232c4d; color:#f3f5ff;">📍</button>
   </div>
@@ -170,7 +355,7 @@ onMounted(() => {
   <div v-if="!routeInfo"
     class="fixed bottom-6 left-4 right-20 z-[999] rounded-2xl border p-3 text-center text-xs font-semibold shadow-xl backdrop-blur-xl"
     style="background: rgba(19,26,51,0.7); border-color:#232c4d; color:#8891b8;">
-    Toque em qualquer ponto do mapa para traçar a rota
+    Toque no mapa ou busque um endereço acima para traçar a rota
   </div>
 </template>
 
