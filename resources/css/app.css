@@ -37,11 +37,17 @@ body, html {
   background: var(--color-void);
 }
 
-/* Playful dark map skin */
+/* Playful dark map skin — inverte os tiles claros do OpenStreetMap para
+   simular um mapa noturno colorido (água em azul, parques em verde),
+   sem depender de um serviço de tiles escuros à parte */
 .leaflet-tile-pane {
-  filter: brightness(0.92) saturate(1.15) hue-rotate(-4deg);
+  filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.95) saturate(1.15);
 }
 
+/* Tema claro: desliga o filtro e mostra o OpenStreetMap no visual original */
+.skymaps-tile-escura {
+  filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.95) saturate(1.15);
+}
 /* Car beacon marker */
 .skymaps-beacon {
   filter: drop-shadow(0 0 8px rgba(59, 107, 255, 0.9)) drop-shadow(0 0 18px rgba(124, 140, 255, 0.5));
@@ -86,7 +92,7 @@ body, html {
   color: var(--color-ink-dim);
 }
 
-/* Routing machine itinerary panel restyle */
+/* Routing machine itinerary panel restyle (usado só se show:true) */
 .leaflet-routing-container {
   background: var(--color-panel) !important;
   color: var(--color-ink) !important;
@@ -98,7 +104,8 @@ body, html {
   top: 8.5rem !important;
   right: 1rem !important;
   max-width: 19rem;
-  overflow: hidden;
+  max-height: 60vh;
+  overflow-y: auto;
 }
 .leaflet-routing-alt {
   background: transparent !important;

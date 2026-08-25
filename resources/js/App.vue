@@ -8,7 +8,8 @@ const routingControl = ref(null);
 const routeInfo = ref(null);
 const gpsReady = ref(false);
 const gpsErro = ref(false);
-
+let tileLayerClaro = null;
+let tileLayerEscuro = null;
 // Recife é usado como fallback caso o navegador negue ou não tenha GPS
 const pontoFallback = [-8.0631, -34.8711];
 
@@ -23,6 +24,32 @@ const resultadosBusca = ref([]);
 const buscando = ref(false);
 const buscaTentada = ref(false);
 let debounceTimer = null;
+let ignorarProximaBusca = false;
+
+const headingGraus = ref(0);
+const bussolaAtiva = ref(false);
+
+const temaEscuro = ref(true);
+
+function alternarTema() {
+  temaEscuro.value = !temaEscuro.value;
+
+  if (map.value && tileLayerClaro && tileLayerEscuro) {
+    if (temaEscuro.value) {
+      map.value.removeLayer(tileLayerClaro);
+      tileLayerEscuro.addTo(map.value);
+    } else {
+      map.value.removeLayer(tileLayerEscuro);
+      tileLayerClaro.addTo(map.value);
+    }
+  }
+
+  try {
+    localStorage.setItem('skymaps-tema', temaEscuro.value ? 'escuro' : 'claro');
+  } catch (e) {
+    // navegador pode bloquear localStorage (modo privado, etc.) — sem problema, só não persiste
+  }
+}
 
 function formatDistancia(metros) {
   const km = metros / 1000;
@@ -110,7 +137,14 @@ async function buscarEndereco(texto) {
   }
 }
 
+// Só dispara nova busca quando o texto muda por digitação do usuário.
+// Quando a gente mesmo preenche o campo (ex: após escolher um resultado),
+// marcamos ignorarProximaBusca para não reabrir a lista sozinha.
 watch(buscaTexto, (novoTexto) => {
+  if (ignorarProximaBusca) {
+    ignorarProximaBusca = false;
+    return;
+  }
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => buscarEndereco(novoTexto), 500);
 });
@@ -121,6 +155,7 @@ function escolherResultado(resultado) {
   ultimaPosicaoRoteada = L.latLng(posicaoAtual);
   resultadosBusca.value = [];
   buscaTentada.value = false;
+  ignorarProximaBusca = true;
   buscaTexto.value = resultado.display_name.split(',').slice(0, 2).join(',');
 }
 
@@ -153,28 +188,86 @@ function criarPinDestino() {
   });
 }
 
+function aoReceberOrientacao(evento) {
+  // iOS expõe o heading verdadeiro direto; outros navegadores usam alpha (relativo)
+  if (typeof evento.webkitCompassHeading === 'number') {
+    headingGraus.value = evento.webkitCompassHeading;
+  } else if (evento.alpha !== null) {
+    headingGraus.value = 360 - evento.alpha;
+  }
+}
+
+function ativarBussola() {
+  const DeviceOrientationEventTyped = window.DeviceOrientationEvent;
+
+  // iOS 13+ exige permissão explícita, só pode ser pedida a partir de um clique
+  if (DeviceOrientationEventTyped && typeof DeviceOrientationEventTyped.requestPermission === 'function') {
+    DeviceOrientationEventTyped.requestPermission()
+      .then((resposta) => {
+        if (resposta === 'granted') {
+          window.addEventListener('deviceorientation', aoReceberOrientacao);
+          bussolaAtiva.value = true;
+        }
+      })
+      .catch(() => { });
+  } else if (window.DeviceOrientationEvent) {
+    window.addEventListener('deviceorientationabsolute', aoReceberOrientacao, true);
+    window.addEventListener('deviceorientation', aoReceberOrientacao, true);
+    bussolaAtiva.value = true;
+  }
+}
+
+function abrirMusica() {
+  // Tenta abrir o app do Spotify (deep link); se não estiver instalado, cai pro player web
+  const inicio = Date.now();
+  window.location.href = 'spotify://';
+  setTimeout(() => {
+    if (Date.now() - inicio < 1500) {
+      window.open('https://open.spotify.com', '_blank');
+    }
+  }, 800);
+}
+
 onMounted(() => {
+  try {
+    if (localStorage.getItem('skymaps-tema') === 'claro') {
+      temaEscuro.value = false;
+    }
+  } catch (e) {
+    // sem problema, só usa o padrão (escuro)
+  }
+
   map.value = L.map('mapContainer', { zoomControl: false }).setView(pontoFallback, 14);
 
-  const tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  const opcoesTile = {
     attribution: '© OpenStreetMap contributors',
     subdomains: 'abc',
     maxZoom: 19
-  }).addTo(map.value);
+  };
+  tileLayerClaro = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', opcoesTile);
+  tileLayerEscuro = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    ...opcoesTile,
+    className: 'skymaps-tile-escura'
+  });
+  (temaEscuro.value ? tileLayerEscuro : tileLayerClaro).addTo(map.value);
+
 
   // Aviso único no console se os tiles não carregarem (rede bloqueada, etc.)
   let avisoTileMostrado = false;
-  tileLayer.on('tileerror', () => {
+  const aoFalharTile = () => {
     if (!avisoTileMostrado) {
       avisoTileMostrado = true;
       console.warn('SkyMaps: falha ao carregar os tiles do mapa (verifique a conexão).');
     }
-  });
+  };
+  tileLayerClaro.on('tileerror', aoFalharTile);
+  tileLayerEscuro.on('tileerror', aoFalharTile);
 
   routingControl.value = L.Routing.control({
     waypoints: [L.latLng(pontoFallback)],
     routeWhileDragging: false,
-    language: 'en',
+    language: 'pt-BR',
+
     show: true,
     showAlternatives: true,
     lineOptions: {
@@ -204,6 +297,14 @@ onMounted(() => {
       duracao: formatDuracao(resumo.totalTime),
       chegada: formatChegada(resumo.totalTime)
     };
+
+    // Reenquadra o mapa pra origem + destino (o pino) sempre caberem na tela,
+    // deixando espaço extra pra barra superior e pro card inferior não tampar nada
+    map.value.fitBounds(L.latLngBounds(e.routes[0].coordinates), {
+      paddingTopLeft: [40, 210],
+      paddingBottomRight: [90, 140],
+      maxZoom: 16
+    });
   });
 
   const carroIcon = L.divIcon({
@@ -234,16 +335,17 @@ onBeforeUnmount(() => {
     navigator.geolocation.clearWatch(watchId);
   }
   clearTimeout(debounceTimer);
+  window.removeEventListener('deviceorientation', aoReceberOrientacao);
+  window.removeEventListener('deviceorientationabsolute', aoReceberOrientacao, true);
 });
 </script>
 
 <template>
-  <div id="mapContainer" class="w-screen h-screen z-0"></div>
+<div id="mapContainer" class="w-screen h-screen z-0"></div>
 
   <div class="fixed top-4 left-4 right-4 z-[1000] flex flex-col gap-3">
     <!-- Barra superior estilo Waze -->
-    <div
-      class="flex items-center justify-between gap-3 rounded-2xl border p-3.5 px-4 shadow-2xl backdrop-blur-xl"
+    <div class="flex items-center justify-between gap-3 rounded-2xl border p-3.5 px-4 shadow-2xl backdrop-blur-xl"
       style="background: rgba(19,26,51,0.82); border-color: #232c4d;">
       <div class="flex items-center gap-3">
         <div class="flex h-10 w-10 items-center justify-center rounded-xl text-lg"
@@ -254,10 +356,13 @@ onBeforeUnmount(() => {
           <h1 class="font-display text-lg font-extrabold leading-none tracking-tight" style="color:#f3f5ff;">
             SKY<span style="color:#7c8cff;">MAPS</span>
           </h1>
-          <p class="mt-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider" style="color:#8891b8;">
+          <p class="mt-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider"
+            style="color:#8891b8;">
             <span class="relative flex h-2 w-2">
-              <span v-if="gpsReady" class="skymaps-pulse-dot absolute inline-flex h-full w-full rounded-full" style="background:#3b6bff;"></span>
-              <span class="relative inline-flex h-2 w-2 rounded-full" :style="{ background: gpsErro ? '#ff4fa3' : (gpsReady ? '#3b6bff' : '#8891b8') }"></span>
+              <span v-if="gpsReady" class="skymaps-pulse-dot absolute inline-flex h-full w-full rounded-full"
+                style="background:#3b6bff;"></span>
+              <span class="relative inline-flex h-2 w-2 rounded-full"
+                :style="{ background: gpsErro ? '#ff4fa3' : (gpsReady ? '#3b6bff' : '#8891b8') }"></span>
             </span>
             {{ gpsErro ? 'Sem sinal — usando Recife' : (gpsReady ? 'GPS conectado' : 'Buscando sinal…') }}
           </p>
@@ -274,13 +379,8 @@ onBeforeUnmount(() => {
       <div class="flex items-center gap-2 rounded-2xl border px-4 py-3 shadow-xl backdrop-blur-xl"
         style="background: rgba(19,26,51,0.85); border-color:#232c4d;">
         <span style="color:#8891b8;">🔍</span>
-        <input
-          v-model="buscaTexto"
-          type="text"
-          placeholder="Para onde vamos?"
-          class="flex-1 bg-transparent text-sm font-medium outline-none"
-          style="color:#f3f5ff;"
-        />
+        <input v-model="buscaTexto" type="text" placeholder="Para onde vamos?"
+          class="flex-1 bg-transparent text-sm font-medium outline-none" style="color:#f3f5ff;" />
         <button v-if="buscaTexto" @click="limparBusca" class="text-sm" style="color:#8891b8;">✕</button>
       </div>
 
@@ -288,13 +388,11 @@ onBeforeUnmount(() => {
         class="absolute left-0 right-0 mt-2 max-h-72 overflow-y-auto rounded-2xl border shadow-2xl backdrop-blur-xl"
         style="background: rgba(19,26,51,0.95); border-color:#232c4d;">
         <div v-if="buscando" class="p-4 text-center text-xs font-semibold" style="color:#8891b8;">Buscando…</div>
-        <div v-else-if="resultadosBusca.length === 0" class="p-4 text-center text-xs font-semibold" style="color:#8891b8;">
+        <div v-else-if="resultadosBusca.length === 0" class="p-4 text-center text-xs font-semibold"
+          style="color:#8891b8;">
           Nenhum endereço encontrado
         </div>
-        <button
-          v-for="(resultado, i) in resultadosBusca"
-          :key="i"
-          @click="escolherResultado(resultado)"
+        <button v-for="(resultado, i) in resultadosBusca" :key="i" @click="escolherResultado(resultado)"
           class="flex w-full items-start gap-2 border-b px-4 py-3 text-left text-xs transition hover:bg-white/5"
           style="border-color:#232c4d; color:#d9daea;">
           <span style="color:#7c8cff;">📍</span>
@@ -306,6 +404,23 @@ onBeforeUnmount(() => {
 
   <!-- Botões flutuantes -->
   <div class="fixed bottom-6 right-4 z-[1000] flex flex-col gap-3">
+    <button @click="alternarTema"
+      class="flex h-11 w-11 items-center justify-center rounded-full border text-lg shadow-xl backdrop-blur-xl transition hover:scale-105 active:scale-95"
+      style="background: rgba(19,26,51,0.9); border-color:#232c4d;"
+      :title="temaEscuro ? 'Mudar para tema claro' : 'Mudar para tema escuro'">
+      {{ temaEscuro ? '☀️' : '🌙' }}
+    </button>
+    <button @click="abrirMusica"
+      class="flex h-11 w-11 items-center justify-center rounded-full border text-lg shadow-xl backdrop-blur-xl transition hover:scale-105 active:scale-95"
+      style="background: rgba(19,26,51,0.9); border-color:#232c4d; color:#f3f5ff;"
+      title="Abrir player de música">🎵</button>
+    <button @click="ativarBussola"
+      class="relative flex h-11 w-11 items-center justify-center rounded-full border shadow-xl backdrop-blur-xl transition hover:scale-105 active:scale-95"
+      style="background: rgba(19,26,51,0.9); border-color:#232c4d;" title="Ativar bússola">
+      <span class="text-[10px] font-bold" style="color: #ff4fa3; position:absolute; top:4px;">N</span>
+      <span class="inline-block text-lg transition-transform duration-200"
+        :style="{ transform: `rotate(${-headingGraus}deg)`, color: bussolaAtiva ? '#3b6bff' : '#8891b8' }">🧭</span>
+    </button>
     <button @click="map.zoomIn()"
       class="flex h-11 w-11 items-center justify-center rounded-full border text-lg font-bold shadow-xl backdrop-blur-xl transition hover:scale-105 active:scale-95"
       style="background: rgba(19,26,51,0.9); border-color:#232c4d; color:#f3f5ff;">+</button>
@@ -318,30 +433,29 @@ onBeforeUnmount(() => {
   </div>
 
   <!-- Card inferior de rota, estilo Waze -->
-  <transition
-    enter-active-class="transition duration-300 ease-out"
-    enter-from-class="opacity-0 translate-y-6"
-    enter-to-class="opacity-100 translate-y-0"
-    leave-active-class="transition duration-200 ease-in"
-    leave-from-class="opacity-100 translate-y-0"
-    leave-to-class="opacity-0 translate-y-6">
+  <transition enter-active-class="transition duration-300 ease-out" enter-from-class="opacity-0 translate-y-6"
+    enter-to-class="opacity-100 translate-y-0" leave-active-class="transition duration-200 ease-in"
+    leave-from-class="opacity-100 translate-y-0" leave-to-class="opacity-0 translate-y-6">
     <div v-if="routeInfo"
       class="fixed bottom-6 left-4 right-20 z-[1000] rounded-2xl border p-4 shadow-2xl backdrop-blur-xl"
       style="background: rgba(19,26,51,0.9); border-color:#232c4d;">
       <div class="flex items-center justify-between">
         <div class="flex gap-5">
           <div>
-            <p class="font-display text-2xl font-extrabold leading-none" style="color:#f3f5ff;">{{ routeInfo.duracao }}</p>
+            <p class="font-display text-2xl font-extrabold leading-none" style="color:#f3f5ff;">{{ routeInfo.duracao }}
+            </p>
             <p class="mt-1 text-[10px] font-semibold uppercase tracking-wide" style="color:#8891b8;">tempo estimado</p>
           </div>
           <div class="w-px" style="background:#232c4d;"></div>
           <div>
-            <p class="font-display text-2xl font-extrabold leading-none" style="color:#7c8cff;">{{ routeInfo.distancia }}</p>
+            <p class="font-display text-2xl font-extrabold leading-none" style="color:#7c8cff;">{{ routeInfo.distancia
+            }}</p>
             <p class="mt-1 text-[10px] font-semibold uppercase tracking-wide" style="color:#8891b8;">distância</p>
           </div>
           <div class="w-px" style="background:#232c4d;"></div>
           <div>
-            <p class="font-display text-2xl font-extrabold leading-none" style="color:#ff4fa3;">{{ routeInfo.chegada }}</p>
+            <p class="font-display text-2xl font-extrabold leading-none" style="color:#ff4fa3;">{{ routeInfo.chegada }}
+            </p>
             <p class="mt-1 text-[10px] font-semibold uppercase tracking-wide" style="color:#8891b8;">chegada</p>
           </div>
         </div>
