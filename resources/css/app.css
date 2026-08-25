@@ -36,10 +36,6 @@ body, html {
   z-index: 1;
   background: var(--color-void);
 }
-
-/* Playful dark map skin — inverte os tiles claros do OpenStreetMap para
-   simular um mapa noturno colorido (água em azul, parques em verde),
-   sem depender de um serviço de tiles escuros à parte */
 .leaflet-tile-pane {
   filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.95) saturate(1.15);
 }

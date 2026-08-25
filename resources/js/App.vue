@@ -10,10 +10,8 @@ const gpsReady = ref(false);
 const gpsErro = ref(false);
 let tileLayerClaro = null;
 let tileLayerEscuro = null;
-// Recife é usado como fallback caso o navegador negue ou não tenha GPS
 const pontoFallback = [-8.0631, -34.8711];
 
-// posicaoAtual não precisa ser reativo: só é lido dentro de handlers/closures
 let posicaoAtual = [...pontoFallback];
 let marcadorCarro = null;
 let watchId = null;
@@ -92,13 +90,12 @@ function iniciarGPS() {
       }
 
       if (!ultimaPosicaoRoteada) {
-        // Primeira localização recebida: centraliza o mapa e move a origem da rota
+
         map.value.setView(posicaoAtual, 15);
         routingControl.value.setWaypoints([L.latLng(posicaoAtual)]);
         ultimaPosicaoRoteada = L.latLng(posicaoAtual);
       } else if (routeInfo.value) {
-        // Já existe uma rota ativa: só recalcula se o carro andou o suficiente
-        // (evita bater no limite de requisições do servidor de rotas a cada segundo)
+
         const distanciaMovida = L.latLng(posicaoAtual).distanceTo(ultimaPosicaoRoteada);
         if (distanciaMovida > 40) {
           const waypoints = routingControl.value.getWaypoints();
@@ -136,10 +133,6 @@ async function buscarEndereco(texto) {
     buscaTentada.value = true;
   }
 }
-
-// Só dispara nova busca quando o texto muda por digitação do usuário.
-// Quando a gente mesmo preenche o campo (ex: após escolher um resultado),
-// marcamos ignorarProximaBusca para não reabrir a lista sozinha.
 watch(buscaTexto, (novoTexto) => {
   if (ignorarProximaBusca) {
     ignorarProximaBusca = false;
@@ -268,8 +261,6 @@ onMounted(() => {
     routeWhileDragging: false,
     language: 'pt-BR',
 
-    show: true,
-    showAlternatives: true,
     lineOptions: {
       styles: [
         { color: '#3b6bff', opacity: 0.25, weight: 14 },
